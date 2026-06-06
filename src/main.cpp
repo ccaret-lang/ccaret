@@ -56,7 +56,7 @@ void print_help() {
         << "  " << kProgramName << " -o hello hello.cca\n"
         << "  " << kProgramName << " --emit=c hello.cca\n"
         << "\n"
-        << "Report bugs to <https://github.com/anomalyco/caret/issues>\n";
+        << "Report bugs to https://github.com/ccaret-lang/ccaret\n";
 }
 
 void print_version() {

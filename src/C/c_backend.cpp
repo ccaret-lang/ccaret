@@ -43,6 +43,11 @@ public:
         out << "}\n";
         out << "#define CSTR(s) ((ccaret_string){ (s), sizeof(s) - 1 })\n";
         out << "\n";
+        out << "/* ccaret_print: variadic dispatcher for `print()` builtin. */\n";
+        out << "static void ccaret_print_s(ccaret_string s) {\n";
+        out << "    fwrite(s.data, 1, s.len, stdout);\n";
+        out << "}\n";
+        out << "\n";
 
         // First pass: emit forward decls for all top-level functions.
         for (const auto& d : unit) {
@@ -493,7 +498,8 @@ private:
                 while (a < b && std::isspace(static_cast<unsigned char>(body[a]))) ++a;
                 while (b > a && std::isspace(static_cast<unsigned char>(body[b - 1]))) --b;
                 body = body.substr(a, b - a);
-                if (body.empty() || body == "d" || body == "i") out += "%d";
+                if (body.empty())                            out += "%s"; // {} -> generic, default to string
+                else if (body == "d" || body == "i")        out += "%d";
                 else if (body == "u")                       out += "%u";
                 else if (body == "x")                       out += "%x";
                 else if (body == "X")                       out += "%X";
@@ -506,7 +512,6 @@ private:
                 else if (body == "lld" || body == "d64")    out += "%lld";
                 else if (body == "llu" || body == "u64")    out += "%llu";
                 else if (body == "z" || body == "zu")       out += "%zu";
-                else if (body == "x" || body == "X")        out += "%" + body;
                 else                                        out += "%" + body;
                 i = end + 1;
             } else {

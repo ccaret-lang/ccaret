@@ -28,6 +28,41 @@ struct Diagnostic {
 class DiagnosticsEngine {
 public:
     void emit(Diagnostic d) { items_.push_back(std::move(d)); }
+
+    // Convenience: build and emit an error with file/line/column from a
+    // span-style token reference.
+    void error(const std::string& file, std::uint32_t line, std::uint32_t col,
+               const std::string& msg, const std::string& evidence = "",
+               const std::string& hint = "",
+               SuggestionKind hint_kind = SuggestionKind::Try) {
+        Diagnostic d;
+        d.severity = Severity::Error;
+        d.message = msg;
+        d.file = file;
+        d.line = line;
+        d.column = col;
+        d.evidence = evidence;
+        d.hint = hint;
+        d.hint_kind = hint_kind;
+        emit(std::move(d));
+    }
+
+    void warning(const std::string& file, std::uint32_t line, std::uint32_t col,
+                 const std::string& msg, const std::string& evidence = "",
+                 const std::string& hint = "",
+                 SuggestionKind hint_kind = SuggestionKind::Tip) {
+        Diagnostic d;
+        d.severity = Severity::Warning;
+        d.message = msg;
+        d.file = file;
+        d.line = line;
+        d.column = col;
+        d.evidence = evidence;
+        d.hint = hint;
+        d.hint_kind = hint_kind;
+        emit(std::move(d));
+    }
+
     const std::vector<Diagnostic>& items() const { return items_; }
     std::vector<Diagnostic>& items() { return items_; }
     bool has_errors() const;

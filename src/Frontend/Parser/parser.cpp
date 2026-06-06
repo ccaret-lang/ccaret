@@ -56,8 +56,29 @@ private:
             advance();
             return t;
         }
-        error_at(cur(), std::string("expected ") + what + ", found " +
-                          token_kind_name(cur().kind));
+        std::string msg = std::string("expected ") + what + ", found " +
+                          token_kind_name(cur().kind);
+        // Helpful hint for the common missing-semicolon case.
+        std::string hint;
+        SuggestionKind kind = SuggestionKind::Try;
+        if (k == TokenKind::Semicolon) {
+            hint = "add `;` at end of statement";
+            kind = SuggestionKind::Try;
+        } else if (k == TokenKind::RParen) {
+            hint = "add `)` to close the argument list";
+            kind = SuggestionKind::Try;
+        } else if (k == TokenKind::RBrace) {
+            hint = "add `}` to close the block";
+            kind = SuggestionKind::Try;
+        } else if (k == TokenKind::RBracket) {
+            hint = "add `]` to close the index";
+            kind = SuggestionKind::Try;
+        }
+        if (!hint.empty()) {
+            error_with_hint(cur(), msg, hint, kind);
+        } else {
+            error_at(cur(), msg);
+        }
         return cur();
     }
     void error_at(const Token& t, std::string msg) {
@@ -72,6 +93,21 @@ private:
         diags_.emit(std::move(d));
     }
     void error_here(std::string msg) { error_at(cur(), std::move(msg)); }
+
+    // Variant: emit an error with a `try:` or `tip:` hint.
+    void error_with_hint(const Token& t, std::string msg, std::string hint,
+                         SuggestionKind kind = SuggestionKind::Try) {
+        Diagnostic d;
+        d.severity = Severity::Error;
+        d.message = std::move(msg);
+        d.line = t.line;
+        d.column = t.column;
+        d.file = path_;
+        d.evidence = token_evidence(t);
+        d.hint = std::move(hint);
+        d.hint_kind = kind;
+        diags_.emit(std::move(d));
+    }
     static std::string token_evidence(const Token& t) {
         if (t.lexeme.empty()) return std::string{};
         return std::string(t.lexeme);
@@ -257,7 +293,8 @@ private:
             init = parse_expr();
         }
         if (!match(TokenKind::Semicolon)) {
-            error_here("expected `;` after top-level declaration");
+            error_with_hint(cur(), "expected `;` after top-level declaration",
+                            "add `;` at end of statement", SuggestionKind::Try);
         }
         auto d = std::make_shared<ast::Decl>();
         d->kind = is_const ? ast::DeclKind::Const : ast::DeclKind::Var;
@@ -455,7 +492,8 @@ private:
             init = parse_expr();
         }
         if (!match(TokenKind::Semicolon)) {
-            error_here("expected `;` after variable declaration");
+            error_with_hint(cur(), "expected `;` after variable declaration",
+                            "add `;` at end of statement", SuggestionKind::Try);
         }
         auto s = ast::make_stmt(ast::StmtKind::VarDecl, span);
         s->var_type = ty;
@@ -474,7 +512,8 @@ private:
             s->return_value = parse_expr();
         }
         if (!match(TokenKind::Semicolon)) {
-            error_here("expected `;` after return");
+            error_with_hint(cur(), "expected `;` after return",
+                            "add `;` at end of statement", SuggestionKind::Try);
         }
         return s;
     }

@@ -164,6 +164,29 @@ std::vector<Token> lex(const std::string& source, const std::string& path) {
             continue;
         }
 
+        // Hex / binary / octal literal: 0x.., 0b.., 0o..
+        // Must come BEFORE the generic digit check, otherwise the `x`/`b`/`o`
+        // gets eaten as a "suffix" by the decimal path.
+        if (c == '0' && i + 1 < n &&
+            (source[i + 1] == 'x' || source[i + 1] == 'X' ||
+             source[i + 1] == 'b' || source[i + 1] == 'B' ||
+             source[i + 1] == 'o' || source[i + 1] == 'O')) {
+            std::size_t start = i;
+            std::uint32_t sc = col;
+            i += 2;
+            col += 2;
+            while (i < n && (is_digit(source[i]) ||
+                             (source[i] >= 'a' && source[i] <= 'f') ||
+                             (source[i] >= 'A' && source[i] <= 'F') ||
+                             source[i] == '_')) {
+                ++i;
+                ++col;
+            }
+            std::string_view text(source.data() + start, i - start);
+            tokens.push_back(make(TokenKind::IntegerLiteral, text, line, sc));
+            continue;
+        }
+
         // Number literal (integer or float)
         if (is_digit(c)) {
             std::size_t start = i;
@@ -197,6 +220,7 @@ std::vector<Token> lex(const std::string& source, const std::string& path) {
                     ++col;
                 }
             }
+            // integer/float suffix
             if (i < n && (source[i] == 'f' || source[i] == 'F' ||
                           source[i] == 'd' || source[i] == 'D' ||
                           source[i] == 'u' || source[i] == 'U' ||
@@ -205,37 +229,10 @@ std::vector<Token> lex(const std::string& source, const std::string& path) {
                 ++i;
                 ++col;
             }
-            if (i < n && (source[i] == 'x' || source[i] == 'X' ||
-                          source[i] == 'b' || source[i] == 'B' ||
-                          source[i] == 'o' || source[i] == 'O')) {
-                ++i;
-                ++col;
-            }
             std::string_view text(source.data() + start, i - start);
             tokens.push_back(make(is_float ? TokenKind::FloatLiteral
                                            : TokenKind::IntegerLiteral,
                                   text, line, sc));
-            continue;
-        }
-
-        // Hex / binary / octal literal: 0x.., 0b.., 0o..
-        if (c == '0' && i + 1 < n &&
-            (source[i + 1] == 'x' || source[i + 1] == 'X' ||
-             source[i + 1] == 'b' || source[i + 1] == 'B' ||
-             source[i + 1] == 'o' || source[i + 1] == 'O')) {
-            std::size_t start = i;
-            std::uint32_t sc = col;
-            i += 2;
-            col += 2;
-            while (i < n && (is_digit(source[i]) ||
-                             (source[i] >= 'a' && source[i] <= 'f') ||
-                             (source[i] >= 'A' && source[i] <= 'F') ||
-                             source[i] == '_')) {
-                ++i;
-                ++col;
-            }
-            std::string_view text(source.data() + start, i - start);
-            tokens.push_back(make(TokenKind::IntegerLiteral, text, line, sc));
             continue;
         }
 
