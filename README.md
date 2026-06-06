@@ -16,9 +16,8 @@ Meaningful. Accurate. Simple. Maxium Performace.
 ## Syntax
 
 ```c, cca
-import std.io;
-
-i32 main() {
-  io.println("Hi, I'm C^"); // doesn't required explicity return 0; in main. still can do
+fn main(args: str[]) -> i32 {
+    print("{} arguments received from the command line", args.len);
+    return 0;
 }
 ```
