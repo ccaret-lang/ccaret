@@ -1,0 +1,30 @@
+name: DragonFly BSD
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    name: DragonFly BSD x86-64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test in DragonFly BSD VM
+        uses: vmactions/dragonflybsd-vm@v1.1.0
+        with:
+          usesh: true
+          copyback: false
+          prepare: |
+            uname -a
+            pkg install -y cmake
+          run: |
+            set -e
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build --target ccaret -j
+            ./bin/ccaret -o a.out examples/functions.cca
+            ./a.out

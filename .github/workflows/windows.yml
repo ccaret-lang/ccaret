@@ -1,0 +1,51 @@
+name: Windows
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    name: Build + smoke test (MSVC, Debug)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake
+        uses: lukka/get-cmake@v5
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure & build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build --target ccaret -j
+
+      - name: Smoke test (functions.cca)
+        run: |
+          ./bin/ccaret.exe -o a.exe examples/functions.cca
+          ./a.exe
+
+      - name: Smoke test (var_const.cca)
+        run: |
+          ./bin/ccaret.exe -o a.exe examples/var_const.cca
+          ./a.exe
+
+      - name: Verify error modal
+        shell: bash
+        run: |
+          set +e
+          ./bin/ccaret.exe examples/error2.cca
+          ec=$?
+          set -e
+          if [ "$ec" -eq 0 ]; then
+            echo "::error::expected caretc to exit non-zero on syntax error"
+            exit 1
+          fi

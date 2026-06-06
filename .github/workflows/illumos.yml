@@ -1,0 +1,33 @@
+name: Illumos
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    name: OmniOS x86-64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test in OmniOS VM
+        uses: vmactions/omnios-vm@v1.3.0
+        with:
+          usesh: true
+          copyback: false
+          prepare: |
+            uname -a
+            pkg install --accept developer/gcc14 ooce/developer/cmake
+          run: |
+            set -e
+            CXX=$(find /opt/gcc-14/bin /opt/gcc-* -name "g++" -type f 2>/dev/null | head -1)
+            CC=$(find  /opt/gcc-14/bin /opt/gcc-* -name "gcc" -type f 2>/dev/null | head -1)
+            export CXX CC
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build --target ccaret -j
+            ./bin/ccaret -o a.out examples/functions.cca
+            ./a.out

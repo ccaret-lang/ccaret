@@ -1,0 +1,38 @@
+name: macOS
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    name: Build + smoke test (AppleClang, Debug)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: brew install cmake
+
+      - name: Configure & build
+        run: make build
+
+      - name: Smoke test (functions.cca)
+        run: make run FILE=examples/functions.cca
+
+      - name: Smoke test (var_const.cca)
+        run: make run FILE=examples/var_const.cca
+
+      - name: Verify error modal
+        run: |
+          set +e
+          ./bin/ccaret examples/error2.cca
+          ec=$?
+          set -e
+          if [ "$ec" -eq 0 ]; then
+            echo "::error::expected caretc to exit non-zero on syntax error"
+            exit 1
+          fi
