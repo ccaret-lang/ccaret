@@ -71,7 +71,8 @@ enum class ExprKind : std::uint8_t {
     IndexAccess,    // a[i]
     Cast,           // (T) x
     Grouped,
-    AddrOf,         // &var  (the @sizeof / @alignof builtins are skipped)
+    AddrOf,         // &var
+    PostfixDeref,   // ptr.* — postfix deref of a raw pointer
 };
 
 enum class UnaryOp : std::uint8_t {
