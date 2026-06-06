@@ -88,7 +88,7 @@ TokenKind resolve_keyword(std::string_view text) {
 
 }  // namespace
 
-std::vector<Token> lex(const std::string& source, const std::string& path) {
+    std::vector<Token> lex(const std::string& source, const std::string& path) {
     (void)path;
     std::vector<Token> tokens;
     tokens.reserve(source.size() / 4 + 16);
@@ -97,10 +97,6 @@ std::vector<Token> lex(const std::string& source, const std::string& path) {
     std::uint32_t col = 1;
     std::size_t i = 0;
     const std::size_t n = source.size();
-
-    auto here = [&](TokenKind k, std::string_view lex, std::size_t start) {
-        return make(k, lex, line, col);
-    };
 
     while (i < n) {
         char c = source[i];

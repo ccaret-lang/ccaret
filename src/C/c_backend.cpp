@@ -331,7 +331,7 @@ private:
             out << e->name;
             break;
         case ast::ExprKind::Unary: {
-            const char* op = "?";
+            const char* op = nullptr;
             bool post = false;
             switch (e->unary_op) {
             case ast::UnaryOp::Neg:    op = "-"; break;
@@ -344,6 +344,7 @@ private:
             case ast::UnaryOp::PostDec:op = "--"; post = true; break;
             case ast::UnaryOp::Deref:  op = "(*"; break;
             }
+            if (!op) op = "?";
             if (e->unary_op == ast::UnaryOp::Deref) {
                 emit_expr(out, e->lhs);
                 out << ")";
@@ -362,7 +363,7 @@ private:
             out << ")";
             break;
         case ast::ExprKind::Binary: {
-            const char* op = "?";
+            const char* op = nullptr;
             switch (e->binary_op) {
             case ast::BinaryOp::Add: op = "+"; break;
             case ast::BinaryOp::Sub: op = "-"; break;
@@ -383,6 +384,7 @@ private:
             case ast::BinaryOp::And: op = "&&"; break;
             case ast::BinaryOp::Or:  op = "||"; break;
             }
+            if (!op) op = "?";
             out << "(";
             emit_expr(out, e->lhs);
             out << " " << op << " ";

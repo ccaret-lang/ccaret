@@ -71,7 +71,7 @@ enum class ExprKind : std::uint8_t {
     IndexAccess,    // a[i]
     Cast,           // (T) x
     Grouped,
-    Sizeof, Alignof, AddrOf,
+    AddrOf,         // &var  (the @sizeof / @alignof builtins are skipped)
 };
 
 enum class UnaryOp : std::uint8_t {
