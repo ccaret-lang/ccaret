@@ -26,6 +26,7 @@ public:
         out << "#include <stddef.h>\n";
         out << "#include <stdbool.h>\n";
         out << "#include <stdarg.h>\n";
+        out << "#include <stdio.h>\n";
         out << "\n";
         out << "typedef char char32_t_alias_for_compat; /* placeholder */\n";
         out << "typedef uint32_t ccaret_char;\n";
@@ -405,7 +406,10 @@ private:
                 for (std::size_t i = 0; i < e->args.size(); ++i) {
                     if (i) out << ", ";
                     if (i == 0 && e->args[i]->kind == ast::ExprKind::StringLiteral) {
-                        out << "\"" << escape_c(e->args[i]->string_value) << "\"";
+                        // Translate C^ format specifiers, then C-escape.
+                        out << "\""
+                            << escape_c(translate_format(e->args[i]->string_value))
+                            << "\"";
                     } else {
                         emit_expr(out, e->args[i]);
                     }
@@ -465,6 +469,48 @@ private:
                 } else {
                     out += c;
                 }
+            }
+        }
+        return out;
+    }
+
+    // Translate C^ format specifiers ({}, {d}, {s}, {f}, {x}) into printf
+    // format specifiers. Unrecognised forms are left intact.
+    static std::string translate_format(const std::string& s) {
+        std::string out;
+        out.reserve(s.size());
+        std::size_t i = 0;
+        while (i < s.size()) {
+            if (s[i] == '{') {
+                std::size_t end = s.find('}', i + 1);
+                if (end == std::string::npos) {
+                    out += s[i++];
+                    continue;
+                }
+                std::string body = s.substr(i + 1, end - i - 1);
+                // Trim
+                std::size_t a = 0, b = body.size();
+                while (a < b && std::isspace(static_cast<unsigned char>(body[a]))) ++a;
+                while (b > a && std::isspace(static_cast<unsigned char>(body[b - 1]))) --b;
+                body = body.substr(a, b - a);
+                if (body.empty() || body == "d" || body == "i") out += "%d";
+                else if (body == "u")                       out += "%u";
+                else if (body == "x")                       out += "%x";
+                else if (body == "X")                       out += "%X";
+                else if (body == "s")                       out += "%s";
+                else if (body == "f" || body == "F")        out += "%f";
+                else if (body == "c")                       out += "%c";
+                else if (body == "p")                       out += "%p";
+                else if (body == "ld")                      out += "%ld";
+                else if (body == "lu")                      out += "%lu";
+                else if (body == "lld" || body == "d64")    out += "%lld";
+                else if (body == "llu" || body == "u64")    out += "%llu";
+                else if (body == "z" || body == "zu")       out += "%zu";
+                else if (body == "x" || body == "X")        out += "%" + body;
+                else                                        out += "%" + body;
+                i = end + 1;
+            } else {
+                out += s[i++];
             }
         }
         return out;

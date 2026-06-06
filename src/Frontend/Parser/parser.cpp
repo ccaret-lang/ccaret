@@ -116,27 +116,30 @@ private:
     }
 
     bool looks_like_top_var() {
-        // TYPE [mut|const] NAME = ...
-        // TYPE [mut|const] NAME ;
-        // TYPE [mut|const] NAME ( ... )   -> function
+        // TYPE [mut|const] NAME = ...   |   ;   |   ( ... )  -> function
         std::size_t save = pos_;
-        // Skip leading type
+        (void)save;
         if (!is_type_start(cur().kind)) return false;
         std::size_t p = pos_ + 1;
-        // Skip pointer/reference markers
+        // optional leading `mut` on the type
+        if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
+        // skip * / & chain
         while (p < toks_.size() &&
-               (toks_[p].kind == TokenKind::Star || toks_[p].kind == TokenKind::Amp ||
-                toks_[p].kind == TokenKind::KwMut)) {
+               (toks_[p].kind == TokenKind::Star || toks_[p].kind == TokenKind::Amp)) {
             ++p;
+            if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
         }
-        // Expect identifier
+        // optional const/volatile after the pointer chain
+        if (p < toks_.size() &&
+            (toks_[p].kind == TokenKind::KwConst || toks_[p].kind == TokenKind::KwVolatile))
+            ++p;
+        // expect identifier
         if (p >= toks_.size() || toks_[p].kind != TokenKind::Identifier) return false;
         ++p;
-        // Optional const/mut
         if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
         if (p < toks_.size() && toks_[p].kind == TokenKind::KwConst) ++p;
         if (p >= toks_.size()) return false;
-        if (toks_[p].kind == TokenKind::Assign) return true;
+        if (toks_[p].kind == TokenKind::Assign)    return true;
         if (toks_[p].kind == TokenKind::Semicolon) return true;
         return false;
     }
@@ -239,6 +242,9 @@ private:
     ast::DeclPtr parse_top_var() {
         ast::Span span{cur().line, cur().column};
         ast::TypePtr ty = parse_full_type(/*allow_ptr_ref=*/true);
+        bool is_mut = false, is_const = false;
+        if (check(TokenKind::KwMut))    { is_mut = true;   advance(); }
+        if (check(TokenKind::KwConst))  { is_const = true; advance(); }
         std::string name;
         if (check(TokenKind::Identifier)) {
             name = std::string(cur().lexeme);
@@ -246,9 +252,6 @@ private:
         } else {
             error_here("expected variable name");
         }
-        bool is_mut = false, is_const = false;
-        if (check(TokenKind::KwMut)) { is_mut = true; advance(); }
-        if (check(TokenKind::KwConst)) { is_const = true; advance(); }
         ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
             init = parse_expr();
@@ -260,7 +263,7 @@ private:
         d->kind = is_const ? ast::DeclKind::Const : ast::DeclKind::Var;
         d->span = span;
         d->var_type = ty;
-        d->var_name = name;
+        d->var_name = std::move(name);
         d->var_is_mut = is_mut;
         d->var_is_const = is_const;
         d->var_init = init;
@@ -288,7 +291,8 @@ private:
                     ast::Parameter p;
                     p.span = {cur().line, cur().column};
                     p.type = parse_full_type(/*allow_ptr_ref=*/true);
-                    if (check(TokenKind::KwMut)) { p.is_mut = true; advance(); }
+                    if (check(TokenKind::KwMut))   { p.is_mut = true;   advance(); }
+                    if (check(TokenKind::KwConst)) { p.is_const = true; advance(); }
                     if (check(TokenKind::Identifier)) {
                         p.name = std::string(cur().lexeme);
                         advance();
@@ -408,16 +412,22 @@ private:
     }
 
     bool looks_like_var_decl() {
-        // TYPE [mut] [const] NAME [= ...] ;
+        // TYPE [mut] NAME [mut] [const] [= ...] ;
+        // TYPE [mut] NAME [mut] [const] (...)   -> function call, not var
         std::size_t p = pos_;
-        // skip base type
+        // skip base type token
         ++p;
-        // skip * / & suffixes
+        // optional leading `mut` on the type (T mut* mut)
+        if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
+        // skip * / & suffixes (with optional trailing mut)
         while (p < toks_.size() &&
                (toks_[p].kind == TokenKind::Star || toks_[p].kind == TokenKind::Amp)) {
             ++p;
             if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
         }
+        // optional const/volatile in the middle (T const * ...)
+        if (p < toks_.size() &&
+            (toks_[p].kind == TokenKind::KwConst || toks_[p].kind == TokenKind::KwVolatile)) ++p;
         if (p >= toks_.size() || toks_[p].kind != TokenKind::Identifier) return false;
         ++p;
         if (p < toks_.size() && toks_[p].kind == TokenKind::KwMut) ++p;
@@ -430,6 +440,9 @@ private:
     ast::StmtPtr parse_var_decl() {
         ast::Span span{cur().line, cur().column};
         ast::TypePtr ty = parse_full_type(/*allow_ptr_ref=*/true);
+        bool is_mut = false, is_const = false;
+        if (check(TokenKind::KwMut))    { is_mut = true;   advance(); }
+        if (check(TokenKind::KwConst))  { is_const = true; advance(); }
         std::string name;
         if (check(TokenKind::Identifier)) {
             name = std::string(cur().lexeme);
@@ -437,9 +450,6 @@ private:
         } else {
             error_here("expected variable name");
         }
-        bool is_mut = false, is_const = false;
-        if (check(TokenKind::KwMut)) { is_mut = true; advance(); }
-        if (check(TokenKind::KwConst)) { is_const = true; advance(); }
         ast::ExprPtr init;
         if (match(TokenKind::Assign)) {
             init = parse_expr();
