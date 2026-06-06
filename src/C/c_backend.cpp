@@ -1,7 +1,7 @@
 // this is the caretc a compiler for the C^
 #include "c_backend.hpp"
 #include "Diagnostics/diagnostics.hpp"
-#include <map>
+// #include <map>
 #include <ostream>
 #include <set>
 #include <sstream>
@@ -49,6 +49,10 @@ public:
     out << "}\n";
     out << "\n";
 
+    // First pass: collect reference names so we can auto-deref them later
+    // (C^ references are emitted as C pointers; every use auto-derefs).
+    collect_reference_names(unit);
+
     // First pass: emit forward decls for all top-level functions.
     for (const auto &d : unit) {
       if (d->kind == ast::DeclKind::Function ||
@@ -94,6 +98,72 @@ public:
 private:
   DiagnosticsEngine &diags_;
 
+  // Names of every variable whose type is a C^ reference. In C^ sources
+  // every read or write through a reference auto-derefs. We model refs as
+  // C pointers, so we wrap each use in `(*...)`. This is a flat name set;
+  // it intentionally leaks across function boundaries in this prototype,
+  // which is fine because C function-level names are file-scoped and
+  // identical names with different kinds in different functions don't
+  // collide in the C output (only the assignment/call sites differ).
+  std::set<std::string> ref_names_;
+
+  static bool is_reference_type(const ast::TypePtr &t) {
+    return t && t->kind == ast::TypeKind::Reference;
+  }
+
+  // Walk the unit and record every name whose declared type is a reference.
+  void collect_reference_names(const ast::TranslationUnit &unit) {
+    for (const auto &d : unit) {
+      if (d->kind == ast::DeclKind::Var || d->kind == ast::DeclKind::Const) {
+        if (is_reference_type(d->var_type))
+          ref_names_.insert(d->var_name);
+      } else if (d->kind == ast::DeclKind::Function ||
+                 d->kind == ast::DeclKind::ExportFn) {
+        for (const auto &p : d->fn_params) {
+          if (is_reference_type(p.type))
+            ref_names_.insert(p.name);
+        }
+        collect_refs_in_stmt(d->fn_body);
+      }
+    }
+  }
+
+  void collect_refs_in_stmt(const ast::StmtPtr &s) {
+    if (!s)
+      return;
+    switch (s->kind) {
+    case ast::StmtKind::VarDecl:
+      if (is_reference_type(s->var_type))
+        ref_names_.insert(s->var_name);
+      break;
+    case ast::StmtKind::Block:
+      for (const auto &sub : s->block_stmts)
+        collect_refs_in_stmt(sub);
+      break;
+    case ast::StmtKind::If:
+      collect_refs_in_stmt(s->if_then);
+      collect_refs_in_stmt(s->if_else);
+      break;
+    case ast::StmtKind::While:
+      collect_refs_in_stmt(s->while_body);
+      break;
+    case ast::StmtKind::For:
+      collect_refs_in_stmt(s->for_init);
+      collect_refs_in_stmt(s->for_body);
+      break;
+    case ast::StmtKind::Loop:
+      collect_refs_in_stmt(s->loop_body);
+      break;
+    case ast::StmtKind::Defer:
+    case ast::StmtKind::Return:
+    case ast::StmtKind::ExprStmt:
+    case ast::StmtKind::Break:
+    case ast::StmtKind::Continue:
+    case ast::StmtKind::Empty:
+      break;
+    }
+  }
+
   // ----- type emission -----
   std::string emit_type(const ast::TypePtr &t) {
     if (!t)
@@ -106,20 +176,21 @@ private:
       // var-init context where type can be elided. Fall back to int.
       return "int";
     case ast::TypeKind::Pointer: {
-      std::string inner = emit_type(t->inner);
-      return inner + " *";
+      // C convention: bind `*` to the variable name (`T*name`), not the
+      // type. We emit the inner type and a trailing `*` with no extra
+      // space; the caller's separator takes care of the gap to the name.
+      return emit_type(t->inner) + "*";
     }
     case ast::TypeKind::Reference: {
-      // C^ references become C pointers for the C backend.
-      std::string inner = emit_type(t->inner);
-      return inner + " *";
+      // C^ references are emitted as C pointers. Same convention as Pointer.
+      return emit_type(t->inner) + "*";
     }
     case ast::TypeKind::Array: {
       std::string inner = emit_type(t->inner);
-      return inner + " *"; // fat pointer
+      return inner + "*"; // fat pointer
     }
     case ast::TypeKind::Slice:
-      return emit_type(t->inner) + " *";
+      return emit_type(t->inner) + "*";
     case ast::TypeKind::Optional:
       return emit_type(t->inner);
     case ast::TypeKind::ErrorUnion:
@@ -200,27 +271,65 @@ private:
     out << ty << " " << d.var_name;
     if (d.var_init) {
       out << " = ";
+      if (is_reference_type(d.var_type))
+        out << "&";
       emit_expr(out, d.var_init);
     }
   }
 
   void emit_function_def(std::ostream &out, const ast::Decl &d) {
     emit_function_decl(out, d);
-    out << " ";
     if (!d.fn_body) {
-      out << "{}\n";
+      out << " {}\n";
       return;
     }
-    emit_stmt(out, d.fn_body);
+    if (d.fn_body->kind == ast::StmtKind::Block) {
+      // Function body is a Block on the same line as the signature.
+      emit_block_inline(out, d.fn_body, /*indent=*/0);
+    } else {
+      out << " ";
+      emit_stmt(out, d.fn_body);
+    }
   }
 
   // ----- statements -----
+
+  // Emit a Block whose `{` sits on the same line as preceding text
+  // (e.g. `int32_t main(void) { ... }` or `if (cond) { ... }`).
+  // The caller is responsible for emitting the leading context; this
+  // helper emits ` { ... }` with body indented one level deeper than
+  // the `indent` argument, and the closing `}` at `indent`.
+  void emit_block_inline(std::ostream &out, const ast::StmtPtr &s, int indent) {
+    out << " {\n";
+    for (const auto &sub : s->block_stmts)
+      emit_stmt(out, sub, indent + 1);
+    out << std::string(indent * 4, ' ') << "}\n";
+  }
+
+  // Emit a child statement that follows a control-flow keyword like
+  // `if (...)` or `while (...)`. Block bodies are emitted inline (brace
+  // on the same line as the keyword); any other body gets a single
+  // separating space and is printed on its own line.
+  void emit_compound_or_inline(std::ostream &out, const ast::StmtPtr &body,
+                               int indent) {
+    if (body && body->kind == ast::StmtKind::Block) {
+      emit_block_inline(out, body, indent);
+    } else {
+      out << " ";
+      emit_stmt(out, body, indent);
+    }
+  }
+
   void emit_stmt(std::ostream &out, const ast::StmtPtr &s, int indent = 1) {
     if (!s)
       return;
     std::string pad(indent * 4, ' ');
     switch (s->kind) {
     case ast::StmtKind::Block: {
+      // A Block that shows up at statement level (not as the body of a
+      // control-flow keyword) is a standalone block: pad-prefixed, brace
+      // on its own line. Control-flow callers should use
+      // `emit_block_inline` instead.
       out << pad << "{\n";
       for (const auto &sub : s->block_stmts)
         emit_stmt(out, sub, indent + 1);
@@ -236,6 +345,8 @@ private:
       out << ty << " " << s->var_name;
       if (s->var_init) {
         out << " = ";
+        if (is_reference_type(s->var_type))
+          out << "&";
         emit_expr(out, s->var_init);
       }
       out << ";\n";
@@ -258,22 +369,18 @@ private:
     case ast::StmtKind::If:
       out << pad << "if (";
       emit_expr(out, s->if_cond);
-      out << ") ";
-      emit_stmt(out, s->if_then, indent);
+      out << ")";
+      emit_compound_or_inline(out, s->if_then, indent);
       if (s->if_else) {
-        out << pad << "else ";
-        if (s->if_else->kind == ast::StmtKind::If) {
-          emit_stmt(out, s->if_else, indent);
-        } else {
-          emit_stmt(out, s->if_else, indent);
-        }
+        out << pad << "else";
+        emit_compound_or_inline(out, s->if_else, indent);
       }
       break;
     case ast::StmtKind::While:
       out << pad << "while (";
       emit_expr(out, s->while_cond);
-      out << ") ";
-      emit_stmt(out, s->while_body, indent);
+      out << ")";
+      emit_compound_or_inline(out, s->while_body, indent);
       break;
     case ast::StmtKind::For:
       out << pad << "for (";
@@ -295,12 +402,12 @@ private:
       out << "; ";
       if (s->for_step)
         emit_expr(out, s->for_step);
-      out << ") ";
-      emit_stmt(out, s->for_body, indent);
+      out << ")";
+      emit_compound_or_inline(out, s->for_body, indent);
       break;
     case ast::StmtKind::Loop:
-      out << pad << "while (1) ";
-      emit_stmt(out, s->loop_body, indent);
+      out << pad << "while (1)";
+      emit_compound_or_inline(out, s->loop_body, indent);
       break;
     case ast::StmtKind::Break:
       out << pad << "break;\n";
@@ -367,7 +474,17 @@ private:
       out << "NULL";
       break;
     case ast::ExprKind::Identifier:
-      out << e->name;
+      if (ref_names_.count(e->name)) {
+        out << "(*" << e->name << ")";
+      } else {
+        out << e->name;
+      }
+      break;
+    case ast::ExprKind::PostfixDeref:
+      // `ptr.*` in C^ -> `(*ptr)` in C.
+      out << "(*";
+      emit_expr(out, e->lhs);
+      out << ")";
       break;
     case ast::ExprKind::Unary: {
       const char *op = nullptr;
@@ -418,9 +535,15 @@ private:
       break;
     }
     case ast::ExprKind::AddrOf:
-      out << "(&";
-      emit_expr(out, e->lhs);
-      out << ")";
+      // `&ident` is the overwhelmingly common shape; emit it bare. Other
+      // operands are parenthesised for safety.
+      if (e->lhs && e->lhs->kind == ast::ExprKind::Identifier) {
+        out << "&" << e->lhs->name;
+      } else {
+        out << "(&";
+        emit_expr(out, e->lhs);
+        out << ")";
+      }
       break;
     case ast::ExprKind::Binary: {
       const char *op = nullptr;
@@ -490,7 +613,15 @@ private:
       break;
     }
     case ast::ExprKind::Assign: {
-      emit_expr(out, e->assign_target);
+      // If the assignment target is a plain identifier whose type is a
+      // C^ reference, dereference it on the LHS (`(*name) = ...`).
+      if (e->assign_target &&
+          e->assign_target->kind == ast::ExprKind::Identifier &&
+          ref_names_.count(e->assign_target->name)) {
+        out << "(*" << e->assign_target->name << ")";
+      } else {
+        emit_expr(out, e->assign_target);
+      }
       if (e->literal_text == "=") {
         out << " = ";
       } else {

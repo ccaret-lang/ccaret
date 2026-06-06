@@ -38,7 +38,7 @@ Nullable but safe — must unwrap before use.
 
 ```c
 i32? maybe = try get();
-i32 v = maybe ?? @default;
+i32 v = maybe ?? default;
 i32 v = maybe ?? -1;
 ```
 

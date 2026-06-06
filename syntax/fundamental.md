@@ -2,9 +2,9 @@
 
 ## 1. Source Layout & Modules
 
-* **File Extension:** `.cc` (No header files like `.h` or `.hp` exist in the ecosystem).
-* **Module Import:** `import core.io;` (Compiler resolves file dependencies directly in a single pass).
-* **Statement Termination:** Newlines or explicit semicolons `;`.
+* **File Extension:** `.cca` (No header files like `.h` or `.hp` exist in the ecosystem).
+* **Module Import:** `import std.io;` (Compiler resolves file dependencies directly in a single pass).
+* **Statement Termination:** explicit semicolons `;`.
 
 ---
 
@@ -61,7 +61,7 @@
 
 
 * **Union Blocks:** Absolute bitwise overlap segments.
-* Syntax: `union NumericData { u32 raw_bits; u8[4] bytes; }`
+* Syntax: `union NumericData { raw_bits(u32); bytes[u8[4]]; }`
 
 
 * **Enum Units:** Uniformly scoped lists using commas or newlines.

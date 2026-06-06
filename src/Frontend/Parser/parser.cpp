@@ -35,11 +35,17 @@ private:
   DiagnosticsEngine &diags_;
   std::string path_;
   std::size_t pos_{0};
+  std::size_t prev_pos_{0};
 
   // ----- token helpers -----
   const Token &cur() const { return toks_[pos_]; }
   const Token &peek(std::size_t off = 0) const {
     return toks_[pos_ + off < toks_.size() ? pos_ + off : toks_.size() - 1];
+  }
+  // Returns the last token we have already consumed. If nothing has been
+  // consumed yet, returns the first token (which is a safe sentinel).
+  const Token &last_consumed() const {
+    return toks_[prev_pos_ < toks_.size() ? prev_pos_ : 0];
   }
   bool at_eof() const { return cur().kind == TokenKind::Eof; }
   bool check(TokenKind k) const { return cur().kind == k; }
@@ -54,8 +60,10 @@ private:
     return false;
   }
   void advance() {
-    if (!at_eof())
+    if (!at_eof()) {
+      prev_pos_ = pos_;
       ++pos_;
+    }
   }
   const Token &expect(TokenKind k, const char *what) {
     if (check(k)) {
@@ -100,6 +108,41 @@ private:
     diags_.emit(std::move(d));
   }
   void error_here(std::string msg) { error_at(cur(), std::move(msg)); }
+
+  // Report an error at the position *immediately after* the most recently
+  // consumed token. This is what we want for "expected `;`"-style errors
+  // at the end of a statement, where the missing token would have been
+  // placed at the end of the previous token's run.
+  void error_at_end_of_last(std::string msg, std::string evidence = ";") {
+    const Token &t = last_consumed();
+    Diagnostic d;
+    d.severity = Severity::Error;
+    d.message = std::move(msg);
+    d.line = t.line;
+    // Column points one past the last character of the previous token.
+    // The diagnostics engine uses column-1 as the 0-based offset, so the
+    // +1 is a no-op for the under-line position; we still want the
+    // reported file:line:col to point past the previous token.
+    d.column = t.column + static_cast<std::uint32_t>(t.lexeme.size());
+    d.file = path_;
+    d.evidence = std::move(evidence);
+    diags_.emit(std::move(d));
+  }
+  void error_at_end_with_hint(std::string msg, std::string hint,
+                              SuggestionKind kind = SuggestionKind::Try,
+                              std::string evidence = ";") {
+    const Token &t = last_consumed();
+    Diagnostic d;
+    d.severity = Severity::Error;
+    d.message = std::move(msg);
+    d.line = t.line;
+    d.column = t.column + static_cast<std::uint32_t>(t.lexeme.size());
+    d.file = path_;
+    d.evidence = std::move(evidence);
+    d.hint = std::move(hint);
+    d.hint_kind = kind;
+    diags_.emit(std::move(d));
+  }
 
   // Variant: emit an error with a `try:` or `tip:` hint.
   void error_with_hint(const Token &t, std::string msg, std::string hint,
@@ -301,33 +344,60 @@ private:
   }
 
   // Parse a type that may include mut, *, & suffixes.
+  //
+  // Per syntax/pointers_refs.cca:
+  //   T*        -> immutable target, immutable binding
+  //   T mut*    -> mutable target, immutable binding   (mut BEFORE *)
+  //   T* mut    -> immutable target, mutable binding   (mut AFTER *)
+  //   T mut* mut -> mutable target, mutable binding
+  //   T&        -> immutable reference
+  //   T mut&    -> mutable-target reference
+  //   T& mut    -> reference with mutable binding
+  //   T mut& mut -> mutable-target reference, mutable binding
+  //
+  // The `mut` BEFORE * / & modifies the pointee. The `mut` AFTER * / & makes
+  // the binding itself mutable. Both can be combined in any order.
   ast::TypePtr parse_full_type(bool allow_ptr_ref = true) {
-    bool mut_target = false;
-    if (check(TokenKind::KwMut)) {
-      mut_target = true;
-      advance();
-    }
     ast::TypePtr base = parse_base_type();
-    if (!allow_ptr_ref) {
-      if (mut_target) {
-        auto t = base;
-        t->mut_target = true;
-      }
+    if (!allow_ptr_ref)
       return base;
-    }
-    // Pointer / reference chain
-    while (check(TokenKind::Star) || check(TokenKind::Amp)) {
+
+    // Pointer / reference chain.
+    //
+    // At each step we may see one of:
+    //     [mut] (* | &) [mut]
+    //
+    // The leading `mut` is consumed only when it is immediately followed by
+    // `*` or `&`; otherwise it is left alone (so a var-level `mut` modifier
+    // is not swallowed into the type).
+    while (true) {
+      bool mut_target = false;
+
+      // Leading `mut` (mut on the pointee) — peek ahead so we don't
+      // accidentally eat a var-binding `mut`.
+      if (check(TokenKind::KwMut) &&
+          (peek(1).kind == TokenKind::Star || peek(1).kind == TokenKind::Amp)) {
+        mut_target = true;
+        advance();
+      }
+
+      if (!check(TokenKind::Star) && !check(TokenKind::Amp))
+        break;
+
       bool is_ptr = check(TokenKind::Star);
       advance();
       auto wrap = std::make_shared<ast::Type>();
       wrap->kind = is_ptr ? ast::TypeKind::Pointer : ast::TypeKind::Reference;
       wrap->inner = base;
       wrap->mut_target = mut_target;
-      mut_target = false;
+
+      // Trailing `mut` (mut on the binding) — always part of the type, not
+      // a var-level modifier, because it sits directly after `*` or `&`.
       if (check(TokenKind::KwMut)) {
         wrap->mut_binding = true;
         advance();
       }
+
       base = wrap;
     }
     return base;
@@ -358,8 +428,9 @@ private:
       init = parse_expr();
     }
     if (!match(TokenKind::Semicolon)) {
-      error_with_hint(cur(), "expected `;` after top-level declaration",
-                      "add `;` at end of statement", SuggestionKind::Try);
+      error_at_end_with_hint("expected `;` after top-level declaration",
+                             "add `;` at end of statement",
+                             SuggestionKind::Try);
     }
     auto d = std::make_shared<ast::Decl>();
     d->kind = is_const ? ast::DeclKind::Const : ast::DeclKind::Var;
@@ -534,7 +605,9 @@ private:
       return parse_var_decl();
     auto e = parse_expr();
     if (!match(TokenKind::Semicolon)) {
-      error_here("expected `;` after expression");
+      error_at_end_with_hint("expected `;` after expression",
+                             "add `;` at end of statement",
+                             SuggestionKind::Try);
     }
     auto s = ast::make_stmt(ast::StmtKind::ExprStmt, span);
     s->expr = e;
@@ -598,8 +671,9 @@ private:
       init = parse_expr();
     }
     if (!match(TokenKind::Semicolon)) {
-      error_with_hint(cur(), "expected `;` after variable declaration",
-                      "add `;` at end of statement", SuggestionKind::Try);
+      error_at_end_with_hint("expected `;` after variable declaration",
+                             "add `;` at end of statement",
+                             SuggestionKind::Try);
     }
     auto s = ast::make_stmt(ast::StmtKind::VarDecl, span);
     s->var_type = ty;
@@ -618,8 +692,9 @@ private:
       s->return_value = parse_expr();
     }
     if (!match(TokenKind::Semicolon)) {
-      error_with_hint(cur(), "expected `;` after return",
-                      "add `;` at end of statement", SuggestionKind::Try);
+      error_at_end_with_hint("expected `;` after return",
+                             "add `;` at end of statement",
+                             SuggestionKind::Try);
     }
     return s;
   }
@@ -971,7 +1046,19 @@ private:
     auto e = parse_primary();
     while (true) {
       if (check(TokenKind::Dot)) {
-        advance();
+        // Postfix deref: `.*` is the raw-pointer dereference operator.
+        // We disambiguate it from a field access (`.ident`) by peeking for
+        // the `*` token directly after the `.`.
+        if (peek(1).kind == TokenKind::Star) {
+          ast::Span s = e->span;
+          advance(); // consume `.`
+          advance(); // consume `*`
+          auto out = make_expr(ast::ExprKind::PostfixDeref, s);
+          out->lhs = e;
+          e = out;
+          continue;
+        }
+        advance(); // consume `.`
         if (check(TokenKind::Identifier)) {
           std::string fn = std::string(cur().lexeme);
           advance();
