@@ -9,27 +9,45 @@ set(BINARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIRECTORY})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIRECTORY})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIRECTORY})
+
+# Always export compile_commands.json so clang-tidy / language servers work.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(${PROJECT_NAME} CXX)
 # Set CMake Build Type
-set(CMAKE_BUILD_TYPE Debug)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug)
+endif()
+
+# ----------------------------------------------------------------------------
+# Optional clang-tidy integration.
+# Usage:  cmake -DCCARET_CLANG_TIDY=ON .
+# Then `cmake --build .` will run clang-tidy-20 on every translation unit.
+# ----------------------------------------------------------------------------
+option(CCARET_CLANG_TIDY "Run clang-tidy during the build" OFF)
+set(CCARET_CLANG_TIDY_BIN "clang-tidy-20" CACHE STRING "Path to clang-tidy binary")
+
+if(CCARET_CLANG_TIDY)
+    find_program(CLANG_TIDY_EXE ${CCARET_CLANG_TIDY_BIN})
+    if(NOT CLANG_TIDY_EXE)
+        message(FATAL_ERROR
+            "CCARET_CLANG_TIDY=ON but '${CCARET_CLANG_TIDY_BIN}' was not found.")
+    endif()
+    message(STATUS "clang-tidy enabled: ${CLANG_TIDY_EXE}")
+    set(CMAKE_CXX_CLANG_TIDY
+        ${CLANG_TIDY_EXE}
+        --use-color
+        --quiet
+        --format-style=file
+    )
+endif()
 
 set(CCARET_SOURCES
     src/main.cpp
+    src/AST/ast.cpp
+    src/Frontend/Token/token.cpp
     src/Frontend/Lexer/lexer.cpp
     src/Frontend/Parser/parser.cpp
-    src/Frontend/Semantics/semantics.cpp
-    src/Frontend/Syntax/syntax.cpp
-    src/Frontend/Token/token.cpp
-    src/IR/HIR/hir.cpp
-    src/IR/MIR/mir.cpp
-    src/IR/LIR/lir.cpp
-    src/Backend/Linker/linker.cpp
-    src/Backend/Linker/Windows/windows_linker.cpp
-    src/Backend/Linker/Linux/linux_linker.cpp
-    src/Backend/Linker/MacOS/macos_linker.cpp
-    src/Backend/Target/x86_64.cpp
-    src/Backend/Target/aarch64.cpp
-    src/AST/ast.cpp
     src/Diagnostics/diagnostics.cpp
     src/C/c_backend.cpp
 )
@@ -37,6 +55,47 @@ set(CCARET_SOURCES
 add_executable(${PROJECT_NAME} ${CCARET_SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE include ${CMAKE_SOURCE_DIR}/src)
 target_link_directories(${PROJECT_NAME} PRIVATE)
+
+# ----------------------------------------------------------------------------
+# Convenience target: invoke the system C compiler on the generated .c file
+# from a single caretc run. Not built by default.
+# ----------------------------------------------------------------------------
+add_custom_target(emit_c
+    COMMAND ${CMAKE_COMMAND} -E echo
+            "Use:  caretc --emit=c <file.cca>  to print the generated C."
+    COMMENT "See --emit=c flag in caretc --help"
+)
+
+# ----------------------------------------------------------------------------
+# Format-check / format-fix target (uses clang-format-20).
+# ----------------------------------------------------------------------------
+find_program(CLANG_FORMAT_EXE clang-format-20)
+if(CLANG_FORMAT_EXE)
+    add_custom_target(format-check
+        COMMAND ${CLANG_FORMAT_EXE} --dry-run --Werror
+                src/main.cpp
+                src/AST/ast.cpp
+                src/Frontend/Token/token.cpp
+                src/Frontend/Lexer/lexer.cpp
+                src/Frontend/Parser/parser.cpp
+                src/Diagnostics/diagnostics.cpp
+                src/C/c_backend.cpp
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "clang-format --dry-run"
+    )
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT_EXE} -i
+                src/main.cpp
+                src/AST/ast.cpp
+                src/Frontend/Token/token.cpp
+                src/Frontend/Lexer/lexer.cpp
+                src/Frontend/Parser/parser.cpp
+                src/Diagnostics/diagnostics.cpp
+                src/C/c_backend.cpp
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "clang-format -i (in place)"
+    )
+endif()
 
 enable_testing()
 add_executable(${PROJECT_NAME}_tests Tests/test_main.cpp)

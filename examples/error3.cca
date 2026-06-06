@@ -1,0 +1,6 @@
+// error demo with hints
+i32 main() {
+  i32 x = "hello";  // type mismatch
+  x = 5;            // reassign to immutable
+  return 0
+}

@@ -1,0 +1,18 @@
+// var_const.cca — ported from syntax/ to verify our pipeline
+string name = "Prathmesh";
+u8 mut age = 17;
+string const surname = "Barot";
+
+i32 const MAX = 0xFFFF;
+f64 const PI = 3.14;
+bool const YES = true;
+
+i32 main() {
+  print("{s} {s} age={d}\n", name.data, surname.data, age);
+  age = 18;
+  print("now age={d}, max={d}, pi={f}\n", age, MAX, PI);
+  if YES {
+    return 0;
+  }
+  return 1;
+}

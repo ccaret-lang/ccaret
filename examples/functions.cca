@@ -1,0 +1,24 @@
+// functions.cca — ported from syntax/ to verify our pipeline
+i32 main() {
+  print("Hello, World! {d}\n", 42);
+}
+
+u8 add(u8 a, u8 b) {
+  return a + b;
+}
+
+void greet() {
+  print("Hi from greet\n");
+}
+
+i32 add3(i32 a, i32 b, i32 c) {
+  i32 sum = a + b + c;
+  return sum;
+}
+
+i32 mut counter = 0;
+
+i32 next_id() {
+  counter = counter + 1;
+  return counter;
+}

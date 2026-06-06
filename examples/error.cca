@@ -1,0 +1,6 @@
+// Test: missing semicolon, unknown identifier
+i32 main() {
+  i32 x = 5
+  i32 y = 10;
+  return 0;
+}

@@ -1,0 +1,8 @@
+// error demo
+i32 main() {
+  i32 x = 5
+  if x > 0 {
+    return 0
+  }
+  return 1
+}
