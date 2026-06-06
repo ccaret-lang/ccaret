@@ -12,8 +12,39 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${BINARY_OUTPUT_DIRECTORY})
 project(${PROJECT_NAME} CXX)
 # Set CMake Build Type
 set(CMAKE_BUILD_TYPE Debug)
-add_executable(${PROJECT_NAME}
-   src/main.cpp
+
+set(CCARET_SOURCES
+    src/main.cpp
+    src/Frontend/Lexer/lexer.cpp
+    src/Frontend/Parser/parser.cpp
+    src/Frontend/Semantics/semantics.cpp
+    src/Frontend/Syntax/syntax.cpp
+    src/Frontend/Token/token.cpp
+    src/IR/HIR/hir.cpp
+    src/IR/MIR/mir.cpp
+    src/IR/LIR/lir.cpp
+    src/Backend/Linker/linker.cpp
+    src/Backend/Linker/Windows/windows_linker.cpp
+    src/Backend/Linker/Linux/linux_linker.cpp
+    src/Backend/Linker/MacOS/macos_linker.cpp
+    src/Backend/Target/x86_64.cpp
+    src/Backend/Target/aarch64.cpp
+    src/AST/ast.cpp
+    src/Diagnostics/diagnostics.cpp
+    src/C/c_backend.cpp
 )
-target_include_directories(${PROJECT_NAME} PRIVATE include)
+
+add_executable(${PROJECT_NAME} ${CCARET_SOURCES})
+target_include_directories(${PROJECT_NAME} PRIVATE include ${CMAKE_SOURCE_DIR}/src)
 target_link_directories(${PROJECT_NAME} PRIVATE)
+
+enable_testing()
+add_executable(${PROJECT_NAME}_tests Tests/test_main.cpp)
+target_include_directories(${PROJECT_NAME}_tests PRIVATE include ${CMAKE_SOURCE_DIR}/src)
+find_package(GTest QUIET)
+if (GTest_FOUND)
+    target_link_libraries(${PROJECT_NAME}_tests PRIVATE GTest::gtest GTest::gtest_main)
+else()
+    target_link_libraries(${PROJECT_NAME}_tests PRIVATE gtest gtest_main)
+endif()
+add_test(NAME ${PROJECT_NAME}_tests COMMAND ${PROJECT_NAME}_tests)
