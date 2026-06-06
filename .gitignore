@@ -1,0 +1,26 @@
+# Doxygen output
+docs/*
+
+# OS/editor junk
+*.swp
+*.swo
+*~
+.DS_Store
+
+build/*
+bin/*
+!bin/resources/
+run.sh
+
+.idea
+.cache
+
+.gitwindeps
+/out
+/.vs
+CMakeSettings.json
+perf.*
+windeps/
+
+# Junk stuff
+ignore_dir/*
