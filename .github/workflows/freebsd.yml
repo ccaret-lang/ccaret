@@ -1,0 +1,44 @@
+name: FreeBSD
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    name: FreeBSD x86-64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1.4.5
+        with:
+          usesh: true
+          copyback: false
+          prepare: |
+            uname -a
+            pkg install -y cmake
+          run: |
+            set -e
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build --target ccaret -j
+
+            # Smoke test: compile and run an example.
+            ./bin/ccaret -o a.out examples/functions.cca
+            ./a.out
+            ./bin/ccaret -o a.out examples/var_const.cca
+            ./a.out
+
+            # Error modal must exit non-zero on bad input.
+            set +e
+            ./bin/ccaret examples/error2.cca
+            ec=$?
+            set -e
+            if [ "$ec" -eq 0 ]; then
+              echo "::error::expected caretc to exit non-zero on syntax error"
+              exit 1
+            fi

@@ -1,0 +1,33 @@
+name: NetBSD
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    name: NetBSD x86-64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and smoke test in NetBSD VM
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          copyback: false
+          prepare: |
+            uname -a
+            export PATH="/usr/sbin:/sbin:$PATH"
+            pkg_add cmake
+          run: |
+            set -e
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build --target ccaret -j
+            ./bin/ccaret -o a.out examples/functions.cca
+            ./a.out
+            ./bin/ccaret -o a.out examples/var_const.cca
+            ./a.out
