@@ -17,10 +17,10 @@ demonstrate the basic structure of a C^ program.
      |        -> portable
      |
      |-------> Syntax Upgrade
-     |        -> Remove depcrepted syntax
+     |        -> Remove deprecated syntax
      |        -> Add new features such as traits, error unions, unions, etc.
      |
-     |-------> Memory Modal Redesign
+     |-------> Memory Model Redesign
               -> Explicit Allocator
               -> Safe Reference & Raw Pointer
               -> Immutable Variable by Default
@@ -30,7 +30,7 @@ demonstrate the basic structure of a C^ program.
 
 ### Historical Perspective
 
-The C^ programming language was created by Prathmesh Barot (me) and my team to help existing C project and Modern Workflow. My Team members are located in diffrent countries. C^ means CCaret's first version is created in 2026. C^ has `^` which means power in mathematical term which represents C with Power.
+The C^ programming language was created by Prathmesh Barot (me) and my team to help existing C projects and modern workflows. My team members are located in different countries. C^ means CCaret's first version.
 
 As C^ is developed under the **ccaret organization**.
 
@@ -39,33 +39,40 @@ As C^ is developed under the **ccaret organization**.
 **Translating a C^ program**
 
 ```
-         |
-  Editor |
-         v
-      |-------------|                |-------------|
-      | Source file |                | Header file |
-      |-------------|                |-------------|
-            |                               |
-  Compiler  |<------------------------------|
-            |
-            |
-            v
-      |-------------|
-      | Object file |
-      |-------------|
-            |
-            |                        |------------------|
-            |                        | Standard library |
-            |                        |------------------|
-            |      |--------------------------|
-  Linker    |<-----|
-            |      |----------------------------------|
-            |                        |-------------------------------|
-            |                        | Other libraries, object files |
-            |                        |-------------------------------|
-            |
-            v
-      |-----------------|
-      | Executable file |
-      |-----------------|
+                           ┌─────────────┐
+                           │   Editor    │
+                           └──────┬──────┘
+                                  │
+                    ┌─────────────┴──────────────┐
+                    │                            │
+            ┌───────▼────────┐          ┌────────▼──────┐
+            │  Source File   │          │  Header File  │
+            └───────┬────────┘          └────────┬──────┘
+                    │                            │
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │      Compiler             │
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │   Object File             │
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────┴────────────────────────┐
+                    │                                      │
+        ┌───────────▼────────────┐      ┌─────────────────▼──────┐
+        │  Standard Library      │      │ Other Libraries &      │
+        │  Symbols              │      │ Object Files           │
+        └────────────────────────┘      └────────────────────────┘
+                    │                                      │
+                    └─────────────┬──────────────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │      Linker               │
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────▼──────────────┐
+                    │  Executable File          │
+                    └───────────────────────────┘
 ```
