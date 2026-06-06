@@ -1,0 +1,20 @@
+// C^ smoke test: types, functions, variables, constants, return
+u8 add(u8 a, u8 b) {
+  return a + b;
+}
+
+i32 main() {
+  u8 mut age = 17;
+  u32 const MAX_AGE = 150;
+  bool mut is_ok = true;
+
+  u8 sum = add(age, 3);
+  print("age={d}", age);
+  print("sum={d}", sum);
+  print("max={d}", MAX_AGE);
+
+  if is_ok {
+    return 0;
+  }
+  return 1;
+}

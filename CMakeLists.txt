@@ -15,21 +15,10 @@ set(CMAKE_BUILD_TYPE Debug)
 
 set(CCARET_SOURCES
     src/main.cpp
+    src/AST/ast.cpp
+    src/Frontend/Token/token.cpp
     src/Frontend/Lexer/lexer.cpp
     src/Frontend/Parser/parser.cpp
-    src/Frontend/Semantics/semantics.cpp
-    src/Frontend/Syntax/syntax.cpp
-    src/Frontend/Token/token.cpp
-    src/IR/HIR/hir.cpp
-    src/IR/MIR/mir.cpp
-    src/IR/LIR/lir.cpp
-    src/Backend/Linker/linker.cpp
-    src/Backend/Linker/Windows/windows_linker.cpp
-    src/Backend/Linker/Linux/linux_linker.cpp
-    src/Backend/Linker/MacOS/macos_linker.cpp
-    src/Backend/Target/x86_64.cpp
-    src/Backend/Target/aarch64.cpp
-    src/AST/ast.cpp
     src/Diagnostics/diagnostics.cpp
     src/C/c_backend.cpp
 )
