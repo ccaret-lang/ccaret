@@ -1,7 +1,23 @@
-// this is the caretc a compiler for the C^
+// Token name tables.
+//
+// Two parallel switches: one for diagnostics ("expected `;`, found ..."),
+// one for raw spelling. They are deliberately separate so the diagnostic
+// strings can carry markup (backticks, articles, "keyword") without
+// polluting any code that just wants the bare lexeme.
+//
+// Keeping these as constexpr-friendly switches (instead of a std::array
+// keyed on the underlying value) means adding a new TokenKind is a
+// compile error here until the entry is added — which is exactly what
+// we want.
 #include "token.hpp"
 
 namespace caret::frontend {
+// Used in diagnostic messages. Punctuation kinds return the literal
+// glyph wrapped in backticks so the message reads naturally:
+//   "expected `;`, found `}`"
+// Anything not explicitly listed falls through to "keyword", which is
+// the right answer for every Kw* entry. Categories (literals,
+// identifier) get their own labels.
 const char *token_kind_name(TokenKind k) {
   switch (k) {
   case TokenKind::Unknown:
@@ -123,6 +139,11 @@ const char *token_kind_name(TokenKind k) {
   }
 }
 
+// Bare textual spelling — no backticks, no quotes. Used when we need
+// to splice the operator back into generated source (e.g. compound
+// assignment lowering in the C backend) or render a suggestion. Returns
+// the empty string for non-punctuation kinds; callers that need a
+// label for those should use token_kind_name instead.
 const char *token_kind_punct(TokenKind k) {
   switch (k) {
   case TokenKind::LParen:

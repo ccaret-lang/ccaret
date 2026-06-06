@@ -172,8 +172,8 @@ void DiagnosticsEngine::render(std::ostream &os, const Diagnostic &d,
   // (e.g. argv / IO errors).
   std::string loc;
   if (d.line > 0 && d.column > 0) {
-    loc = d.file + ":" + std::to_string(d.line) + ":" +
-          std::to_string(d.column);
+    loc =
+        d.file + ":" + std::to_string(d.line) + ":" + std::to_string(d.column);
   }
 
   // The body is the message exactly as the caller supplied it. Per the
@@ -205,12 +205,11 @@ void DiagnosticsEngine::render(std::ostream &os, const Diagnostic &d,
     } else {
       const std::size_t leader =
           target - left_w - 1 - loc_w - 1; // 1 space + loc + 1 trailing
-      const std::string dots = leader >= 2
-                                   ? repeat(std::string("\xC2\xB7"), leader)
-                                   : "  ";
+      const std::string dots =
+          leader >= 2 ? repeat(std::string("\xC2\xB7"), leader) : "  ";
       os << head_style << tag << reset << " " << dim << ".." << reset << " "
-         << body << " " << dim << dots << reset << " " << cyan << loc
-         << reset << "\n";
+         << body << " " << dim << dots << reset << " " << cyan << loc << reset
+         << "\n";
     }
   }
 

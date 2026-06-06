@@ -376,8 +376,7 @@ private:
       // Leading `mut` (mut on the pointee) — peek ahead so we don't
       // accidentally eat a var-binding `mut`.
       if (check(TokenKind::KwMut) &&
-          (peek(1).kind == TokenKind::Star ||
-           peek(1).kind == TokenKind::Amp)) {
+          (peek(1).kind == TokenKind::Star || peek(1).kind == TokenKind::Amp)) {
         mut_target = true;
         advance();
       }
