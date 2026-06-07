@@ -1,4 +1,19 @@
-// this is the caretc a compiler for the C^
+// Parser implementation.
+//
+// Hand-written recursive descent. We use a one-token `cur()` and a
+// two-token `peek(n)` lookahead; the parser also keeps `prev_pos_` so
+// diagnostics for "expected `;` after X" can point at the column just
+// past the last consumed token (the natural place the missing token
+// would have lived).
+//
+// Precedence climbs through the parse_* chain: parse_expr -> parse_assign
+// -> parse_ternary -> parse_or -> ... -> parse_unary -> parse_postfix ->
+// parse_primary. Each level folds left-associative binary operators of
+// the same precedence into a left-leaning tree.
+//
+// Error recovery is intentionally simple: on a top-level failure we
+// sync forward to the next `;`, `}`, or `{` and try again. A 256-token
+// safety bound stops runaway loops on malformed input.
 #include "parser.hpp"
 #include <cassert>
 #include <cctype>
@@ -16,12 +31,21 @@ public:
   Parser(const std::vector<Token> &toks, DiagnosticsEngine &d, std::string path)
       : toks_(toks), diags_(d), path_(std::move(path)) {}
 
+  // Drive the top-level parse loop: read declarations until EOF,
+  // attaching each successfully parsed Decl to the translation unit.
+  // On a parse failure we let sync_recovery() bump the cursor past
+  // the bad region and try again — this is what lets us report
+  // multiple errors in a single run instead of bailing on the first
+  // typo.
   ParseResult run() {
     ParseResult r;
     while (!at_eof()) {
       if (auto d = parse_top_level()) {
         r.unit.push_back(d);
       } else {
+        // parse_top_level returns nullptr when a top-level form fails
+        // badly enough to warrant a resync. If the resync itself
+        // can't find a usable token we stop — we'd otherwise spin.
         if (!at_eof() && !sync_recovery())
           break;
       }
@@ -44,14 +68,19 @@ private:
   }
   // Returns the last token we have already consumed. If nothing has been
   // consumed yet, returns the first token (which is a safe sentinel).
+  // Used by "missing trailing punctuation" diagnostics, which want to
+  // point at the column just past the previous token.
   const Token &last_consumed() const {
     return toks_[prev_pos_ < toks_.size() ? prev_pos_ : 0];
   }
   bool at_eof() const { return cur().kind == TokenKind::Eof; }
+  // Single-token lookahead. `check2` is the only place we look two
+  // tokens ahead (e.g. `extern {`); everything else rides on `cur`.
   bool check(TokenKind k) const { return cur().kind == k; }
   bool check2(TokenKind a, TokenKind b) const {
     return cur().kind == a && peek(1).kind == b;
   }
+  // Consume `k` if present, otherwise leave the cursor alone.
   bool match(TokenKind k) {
     if (check(k)) {
       advance();
@@ -59,12 +88,21 @@ private:
     }
     return false;
   }
+  // Bump the cursor by one token. Skips over Eof so a runaway loop
+  // doesn't walk past the end of the buffer. Always updates
+  // `prev_pos_` so `last_consumed()` stays accurate.
   void advance() {
     if (!at_eof()) {
       prev_pos_ = pos_;
       ++pos_;
     }
   }
+  // Expect `k`; on mismatch emit a diagnostic with a contextual hint
+  // (where possible) and return the offending token without consuming
+  // it. The hint table is local to this function on purpose: the
+  // suggestions are about missing punctuation, and a future refactor
+  // that needs richer hints should reach for a proper diagnostic
+  // framework rather than growing this list.
   const Token &expect(TokenKind k, const char *what) {
     if (check(k)) {
       const Token &t = cur();
@@ -73,7 +111,7 @@ private:
     }
     std::string msg = std::string("expected ") + what + ", found " +
                       token_kind_name(cur().kind);
-    // Helpful hint for the common missing-semicolon case.
+    // Helpful hint for the common missing-punctuation cases.
     std::string hint;
     SuggestionKind kind = SuggestionKind::Try;
     if (k == TokenKind::Semicolon) {
@@ -112,7 +150,9 @@ private:
   // Report an error at the position *immediately after* the most recently
   // consumed token. This is what we want for "expected `;`"-style errors
   // at the end of a statement, where the missing token would have been
-  // placed at the end of the previous token's run.
+  // placed at the end of the previous token's run. Caller may pass an
+  // explicit `evidence` string (e.g. ";", ")", "}") so the caret underline
+  // is rendered against the natural shape of the missing token.
   void error_at_end_of_last(std::string msg, std::string evidence = ";") {
     const Token &t = last_consumed();
     Diagnostic d;
@@ -128,6 +168,7 @@ private:
     d.evidence = std::move(evidence);
     diags_.emit(std::move(d));
   }
+  // Same as error_at_end_of_last, but attaches a `try:`/`tip:` hint.
   void error_at_end_with_hint(std::string msg, std::string hint,
                               SuggestionKind kind = SuggestionKind::Try,
                               std::string evidence = ";") {
@@ -165,6 +206,10 @@ private:
   }
 
   // ----- recovery -----
+  // Bump the cursor until we hit a likely-statement-boundary token
+  // (`;`, `}`, or `{`) or the safety counter trips. Returning true
+  // means we found a usable resync point; false means we ran out of
+  // input. The caller should treat false as "stop parsing".
   bool sync_recovery() {
     int safety = 0;
     while (!at_eof()) {
@@ -177,6 +222,8 @@ private:
       if (cur().kind == TokenKind::LBrace)
         return true;
       advance();
+      // 256 is enough to skip almost any plausible malformed construct
+      // without turning a single bad token into an infinite loop.
       if (++safety > 256)
         break;
     }
@@ -184,6 +231,10 @@ private:
   }
 
   // ----- top level -----
+  // Dispatch on the first token of a top-level declaration. Order
+  // matters: the more specific keywords (`import`, `extern { ... }`)
+  // run first so the generic `Type name ...` branch never has to
+  // disambiguate them.
   ast::DeclPtr parse_top_level() {
     // imports
     if (check(TokenKind::KwImport))
@@ -210,6 +261,11 @@ private:
     return parse_function();
   }
 
+  // Cheap lookahead classifier: does this position look like the start
+  // of a top-level var/const declaration rather than a function?
+  // The grammar allows both `Type name = expr;` and `Type name(...) { }`,
+  // which is fundamentally ambiguous until we see either `=`/`;` or `(`.
+  // We use a bounded peek without consuming any tokens.
   bool looks_like_top_var() {
     // TYPE [mut|const] NAME = ...   |   ;   |   ( ... )  -> function
     std::size_t save = pos_;
@@ -249,6 +305,10 @@ private:
   }
 
   // ----- type parsing -----
+  // Token set that may legally begin a type expression. The named
+  // built-ins, user types (Identifier), and the storage class
+  // keywords (`mut`, `const`, `volatile`) are all valid leading
+  // forms; everything else is rejected.
   static bool is_type_start(TokenKind k) {
     switch (k) {
     case TokenKind::KwI8:
@@ -288,6 +348,9 @@ private:
     return k == TokenKind::KwMut || k == TokenKind::KwConst;
   }
 
+  // parse_type: dispatch to parse_base_type. We currently keep the
+  // leading const/volatile variant in the same function so future
+  // qualifiers (restrict, atomic) only need to add cases here.
   ast::TypePtr parse_type() {
     // Optional leading const/volatile for raw-pointer types
     ast::TypePtr t;
@@ -304,6 +367,11 @@ private:
     return t;
   }
 
+  // Parse a single named type (no pointer/reference sugar). All
+  // built-in numeric type keywords share a single arm because they all
+  // lower to a TypeKind::Named with the spelling preserved. The
+  // Identifier arm is the user-type case; resolution to a concrete
+  // declaration happens in the semantic pass.
   ast::TypePtr parse_base_type() {
     TokenKind k = cur().kind;
     switch (k) {
@@ -336,6 +404,9 @@ private:
       return ast::Type::named(std::move(name));
     }
     default:
+      // Recover by synthesising a "<error>" placeholder type. Downstream
+      // passes should test for this name and short-circuit, not assume
+      // a valid type.
       error_here(std::string("expected type, found ") +
                  token_kind_name(cur().kind));
       advance();
@@ -357,6 +428,11 @@ private:
   //
   // The `mut` BEFORE * / & modifies the pointee. The `mut` AFTER * / & makes
   // the binding itself mutable. Both can be combined in any order.
+  //
+  // `allow_ptr_ref` exists so callers that need a bare base type (e.g.
+  // some forms of generic context that will be re-parsed later) can
+  // disable the pointer/reference chain without writing a duplicate
+  // parse_base_type call site.
   ast::TypePtr parse_full_type(bool allow_ptr_ref = true) {
     ast::TypePtr base = parse_base_type();
     if (!allow_ptr_ref)
@@ -404,6 +480,11 @@ private:
   }
 
   // ----- top var / const decl -----
+  // Parse `Type [mut|const] name [= init] ;` at file scope. The
+  // `looks_like_top_var` predicate at the top level guarantees the
+  // shape, so we don't need to backtrack. Const decls without an
+  // initializer are accepted; the C backend treats them as
+  // uninitialised globals (rare, but valid C).
   ast::DeclPtr parse_top_var() {
     ast::Span span{cur().line, cur().column};
     ast::TypePtr ty = parse_full_type(/*allow_ptr_ref=*/true);
@@ -444,6 +525,11 @@ private:
   }
 
   // ----- function -----
+  // `RET_TYPE NAME ( PARAM, ... ) { BODY }` and the variant forms
+  // `extern RET_TYPE NAME (...);` and `export RET_TYPE NAME (...) { }`.
+  // The `is_extern` flag is set when the function declaration has no
+  // body (the only legal extern form) and the C backend will lower it
+  // to a forward declaration only.
   ast::DeclPtr parse_function(bool is_export = false, bool is_extern = false) {
     ast::Span span{cur().line, cur().column};
     ast::TypePtr ret = parse_full_type(/*allow_ptr_ref=*/true);
@@ -510,6 +596,10 @@ private:
     return d;
   }
 
+  // `import <path>;` where <path> is either a string literal (file
+  // path) or a dotted module path (`std.io`, `std.heap.*`). The
+  // module resolver hasn't landed; the import path is preserved
+  // verbatim on the Decl for later use.
   ast::DeclPtr parse_import() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -518,7 +608,8 @@ private:
       path = std::string(cur().lexeme.substr(1, cur().lexeme.size() - 2));
       advance();
     } else {
-      // dotted module path
+      // Dotted module path: identifiers separated by `.`; we also
+      // accept `*` (glob import) per the v0.2 module spec.
       while (check(TokenKind::Identifier) || check(TokenKind::Dot) ||
              check(TokenKind::Star)) {
         path += std::string(cur().lexeme);
@@ -535,6 +626,11 @@ private:
     return d;
   }
 
+  // `extern { ... }` block: a flat list of C-ABI function declarations
+  // with no bodies. In v0.1.0 we just discard the inner decls — the
+  // `extern` keyword's only effect today is to keep the C backend
+  // from emitting forward declarations. A real implementation will
+  // surface these as Decl::ExternFn entries in the TU.
   void parse_extern_block() {
     // consume 'extern' '{'
     advance();
@@ -544,10 +640,9 @@ private:
     }
     while (!check(TokenKind::RBrace) && !at_eof()) {
       if (auto d = parse_function(/*is_export=*/false, /*is_extern=*/true)) {
-        // We just drop these for now in the AST? No — keep them as ExternFn.
-        // But we need a TU to return them. Just return first only.
-        // For simplicity, push only the first and recover on others.
-        // Actually we have no place to push multiple; ignore extras.
+        // TODO(0.2): surface these as Decl::ExternFn in the TU. The
+        // current translator-unit vector lives in run(); threading the
+        // result out needs a small refactor.
         (void)d;
       }
       if (!sync_recovery())
@@ -557,6 +652,9 @@ private:
   }
 
   // ----- statements -----
+  // Parse a brace-delimited sequence of statements. Empty blocks are
+  // legal (yielding a Block with zero children); we still consume the
+  // closing `}` so the rest of the parser sees a balanced input.
   ast::StmtPtr parse_block() {
     ast::Span span{cur().line, cur().column};
     expect(TokenKind::LBrace, "`{`");
@@ -571,6 +669,11 @@ private:
     return blk;
   }
 
+  // Dispatch on the first token of a statement. The order matters:
+  // control-flow keywords are tried before the generic "look like a
+  // type" check, otherwise `if (cond)` etc. would be misclassified as
+  // a variable declaration (`if` is not a type, but the check is on
+  // every reserved-looking word; putting it last is safer).
   ast::StmtPtr parse_stmt() {
     ast::Span span{cur().line, cur().column};
     if (check(TokenKind::Semicolon)) {
@@ -699,6 +802,9 @@ private:
     return s;
   }
 
+  // `if cond { then } [elif ... | else ...]`. The cond is a full
+  // expression (so `if x = 5` parses as a typed comparison to non-zero
+  // — match the C convention) and the body must be a block.
   ast::StmtPtr parse_if() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -706,8 +812,13 @@ private:
     auto then_s = parse_block();
     ast::StmtPtr else_s;
     if (match(TokenKind::KwElif)) {
+      // `elif` is desugared to a nested If inside the else slot. This
+      // keeps the AST shape uniform (no separate Elif kind) and the
+      // backend prints them as a chain of `else if` automatically.
       else_s = parse_if();
     } else if (match(TokenKind::KwElse)) {
+      // `else` accepts either a block (the common case) or a single
+      // statement (rare; included for parity with C-family languages).
       if (check(TokenKind::LBrace))
         else_s = parse_block();
       else
@@ -720,6 +831,9 @@ private:
     return s;
   }
 
+  // `while cond { body }` — only the block form is supported today.
+  // C-style `while (...) ;` (empty body) works because the parser
+  // accepts an empty block.
   ast::StmtPtr parse_while() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -731,6 +845,10 @@ private:
     return s;
   }
 
+  // C-style `for (init; cond; step) body`. init is parsed as a
+  // statement (so it may be a full var-decl with initializer); cond
+  // and step are bare expressions. All three header pieces are
+  // optional; the body is not.
   ast::StmtPtr parse_for() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -746,6 +864,9 @@ private:
     return s;
   }
 
+  // `loop { body }` — unconditional infinite loop, lowered to
+  // `while (1)` in the C backend. Break/continue inside the body are
+  // the only way out.
   ast::StmtPtr parse_loop() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -754,6 +875,10 @@ private:
     return s;
   }
 
+  // `defer EXPR;` or `defer { STMT; STMT; ... }`. v0.1.0 lowers the
+  // single-statement form verbatim and skips the block form. The
+  // semantic pass / IR is expected to schedule the deferred calls at
+  // scope exit; the C backend currently emits a comment marker.
   ast::StmtPtr parse_defer() {
     ast::Span span{cur().line, cur().column};
     advance();
@@ -779,9 +904,23 @@ private:
   }
 
   // ----- expressions -----
-  // Precedence climbing.
+  // Precedence climbing. The chain below implements C-operator
+  // precedence from lowest to highest:
+  //   assign -> ternary -> or -> and -> bitor -> bitxor -> bitand ->
+  //   equality -> relational -> shift -> additive -> multiplicative ->
+  //   unary -> postfix -> primary
+  // Each level folds left-associative binary operators of the same
+  // precedence into a left-leaning tree. The chain is intentionally
+  // regular: if you add a new precedence level, insert one new
+  // function between two existing ones and call the higher one from
+  // the lower. Do not inline — the regular shape keeps the
+  // precedence table self-documenting.
   ast::ExprPtr parse_expr() { return parse_assign(); }
 
+  // Right-associative assignment. The single recursive call on `rhs`
+  // is what makes `a = b = 5` parse as `a = (b = 5)`. The operator
+  // text (`=`, `+=`, ...) is stashed in `literal_text` so the backend
+  // can re-derive the compound form without keeping a parallel enum.
   ast::ExprPtr parse_assign() {
     auto e = parse_ternary();
     if (check(TokenKind::Assign) || check(TokenKind::PlusAssign) ||
@@ -802,10 +941,15 @@ private:
     return e;
   }
 
-  // We keep a tiny namespace alias to avoid leaking the enum into the
-  // namespace aliasing above.
+  // Tiny alias to keep the line above readable. We don't `using
+  // namespace` because that would pollute every method below.
   using ExprKind_tag = ast::ExprKind;
 
+  // Ternary `cond ? t : f` is parsed structurally but the AST is
+  // intentionally not extended for it; we consume the `?` / `:`
+  // tokens and throw the branches away, returning only the
+  // condition. This keeps the C backend simple while letting the
+  // source still parse (the user can fix it once we add the kind).
   ast::ExprPtr parse_ternary() {
     auto e = parse_or();
     if (match(TokenKind::Question)) {
@@ -1178,6 +1322,11 @@ private:
   }
 
   // ----- literal helpers -----
+  // Convert a raw integer lexeme (e.g. "0xFF_u", "1_000_000") to its
+  // 64-bit value. Stripping underscores first is cheap and the lexer
+  // has already guaranteed the lexeme is well-formed modulo overflow
+  // (which std::stoll surfaces via exception — the surrounding
+  // pipeline treats that as a fatal error and bails out).
   static long long parse_int_literal(const std::string &s) {
     std::string t = s;
     for (auto it = t.begin(); it != t.end();) {
@@ -1205,6 +1354,10 @@ private:
     return std::stoll(t, nullptr, 10);
   }
 
+  // Decode the body between the single quotes of a char literal.
+  // We honour the C-style short escapes; multi-char or non-standard
+  // escapes are silently taken at their raw byte value (which is what
+  // most C-family compilers do too, modulo the warning they emit).
   static std::uint32_t parse_char_literal(const std::string &s) {
     // s like 'a' or '\n'
     std::string body = s.substr(1, s.size() - 2);
@@ -1231,6 +1384,10 @@ private:
     return body.empty() ? 0 : static_cast<std::uint32_t>(body[0]);
   }
 
+  // unescape_c decodes the C-style escape sequences inside a string
+  // literal's body (quotes already stripped). Unknown escapes are
+  // passed through verbatim so the user gets a sensible result for
+  // `\?` etc. without us needing to enumerate every C escape.
   static std::string unescape_c(std::string s) {
     if (s.size() >= 2 && s.front() == '"')
       s = s.substr(1, s.size() - 2);
@@ -1258,6 +1415,10 @@ private:
           out += '\0';
           break;
         default:
+          // Unknown escape: keep the backslashed char verbatim. This
+          // matches what most C-family string-literal parsers do for
+          // non-standard escapes; we don't have a warning channel here
+          // so we silently let it through.
           out += s[i + 1];
           break;
         }
@@ -1272,6 +1433,10 @@ private:
 
 } // namespace
 
+// Public entry point. Constructs a Parser, runs it over the token
+// stream, and returns the result. Errors are pushed into the borrowed
+// DiagnosticsEngine along the way; the caller is responsible for
+// rendering them.
 ParseResult parse(const std::vector<Token> &tokens, DiagnosticsEngine &diags,
                   const std::string &source_path) {
   Parser p(tokens, diags, source_path);

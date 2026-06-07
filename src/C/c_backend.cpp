@@ -1,4 +1,25 @@
-// this is the caretc a compiler for the C^
+// C backend implementation.
+//
+// Translation strategy:
+//   * One pass over the AST, three logical phases:
+//       1. Emit a fixed header (includes, ccaret_string, print helper).
+//       2. Walk the unit, remembering every name that is a C^
+//          reference. C^ references lower to C pointers and every
+//          use auto-derefs, so we need the name set at every emit.
+//       3. Forward-decl functions, then top-level var/const decls,
+//          then function bodies.
+//   * Expressions lower with the smallest possible C surface: binary
+//     ops are parenthesised, calls split into a callee + arg list,
+//     string literals go through CSTR() for a fat-pointer literal.
+//   * The `print()` builtin is recognised by name and lowered to
+//     printf with a C^ -> printf format translation (see
+//     translate_format).
+//
+// This backend does not yet do type-aware lowering; everything
+// (mutability, borrow rules) is assumed to have been checked by a
+// future semantic pass. The output is correct C, but it is *not*
+// guaranteed to be safe or meaningful in the presence of undefined
+// behaviour at the source level.
 #include "c_backend.hpp"
 #include "Diagnostics/diagnostics.hpp"
 // #include <map>
@@ -107,11 +128,15 @@ private:
   // collide in the C output (only the assignment/call sites differ).
   std::set<std::string> ref_names_;
 
+  // is_reference_type: a thin predicate that tolerates a null TypePtr
+  // so call sites in emit_type / emit_function_def don't have to.
   static bool is_reference_type(const ast::TypePtr &t) {
     return t && t->kind == ast::TypeKind::Reference;
   }
 
   // Walk the unit and record every name whose declared type is a reference.
+  // This must run before any expression is emitted so that every
+  // reference use can be wrapped in `(*...)`.
   void collect_reference_names(const ast::TranslationUnit &unit) {
     for (const auto &d : unit) {
       if (d->kind == ast::DeclKind::Var || d->kind == ast::DeclKind::Const) {
@@ -165,6 +190,12 @@ private:
   }
 
   // ----- type emission -----
+  // Convert an AST type to its C spelling. C has no notion of
+  // references, slices, optionals, or error unions, so we map:
+  //   T&  ->  T*  (and the caller wraps every use in `(*...)`)
+  //   T[] / T[N]  ->  T*  (the fat-pointer runtime helper tracks the length)
+  //   T?  /  T!Err  ->  T   (error info is carried separately)
+  // The function is null-safe: a missing type degrades to `void`.
   std::string emit_type(const ast::TypePtr &t) {
     if (!t)
       return "void";
@@ -241,11 +272,18 @@ private:
     return caret_name; // pass through user types
   }
 
+  // is_void_type: thin predicate used by emit_function_decl to keep the
+  // return type spelling exactly `void` (not `int` from the default
+  // path) for the many `void NAME(...)` declarations in real code.
   static bool is_void_type(const ast::TypePtr &t) {
     return t && t->kind == ast::TypeKind::Named && t->name == "void";
   }
 
   // ----- declarations -----
+  // emit_function_decl writes the prototype — `RET NAME ( PARAM, ... )` —
+  // shared between a forward declaration and a full definition. Empty
+  // parameter lists emit the explicit C `(void)` form so the resulting
+  // prototype still catches argument-count mismatches at link time.
   void emit_function_decl(std::ostream &out, const ast::Decl &d) {
     std::string ret = emit_type(d.fn_return_type);
     if (is_void_type(d.fn_return_type))
@@ -264,6 +302,9 @@ private:
     out << ")";
   }
 
+  // emit_top_var: write `<type> <name>[ = <init>];` for a top-level
+  // var/const decl. References get a leading `&` on the init side
+  // because C^ refs bind to an address, not a value copy.
   void emit_top_var(std::ostream &out, const ast::Decl &d) {
     std::string ty = emit_type(d.var_type);
     if (d.var_is_const)
@@ -277,6 +318,10 @@ private:
     }
   }
 
+  // emit_function_def: the definition side of a function. The
+  // forward-decl-only case (no body) is the empty-block form `{}`
+  // because the parser has already validated a body or a `;` for
+  // extern declarations.
   void emit_function_def(std::ostream &out, const ast::Decl &d) {
     emit_function_decl(out, d);
     if (!d.fn_body) {
@@ -416,11 +461,13 @@ private:
       out << pad << "continue;\n";
       break;
     case ast::StmtKind::Defer:
-      // Best-effort: emit the deferred expression at the defer site
-      // (C has no defer). For a single-statement defer with an
-      // identifier of form "x" we emit nothing; for method calls we
-      // emit them inline as a comment + statement. To stay correct
-      // for now we simply emit a comment marker.
+      // C has no defer. The most correct lowering would buffer
+      // deferred calls and replay them at every scope exit; that's
+      // blocked on the proper IR pass. For now we emit a comment
+      // marker so a human reading the generated C can still see the
+      // original intent. Calling the deferred expression at the
+      // defer site would change observable behaviour, so we
+      // explicitly do not do that.
       if (s->defer_expr) {
         out << pad << "/* defer: ";
         emit_expr(out, s->defer_expr);
@@ -535,8 +582,10 @@ private:
       break;
     }
     case ast::ExprKind::AddrOf:
-      // `&ident` is the overwhelmingly common shape; emit it bare. Other
-      // operands are parenthesised for safety.
+      // `&ident` is the overwhelmingly common shape; emit it bare.
+      // Anything more complex (e.g. `&(a + b)`) is parenthesised to
+      // keep the precedence obvious to a human reader and to silence
+      // the "address of temporary" warning some compilers raise.
       if (e->lhs && e->lhs->kind == ast::ExprKind::Identifier) {
         out << "&" << e->lhs->name;
       } else {
@@ -635,7 +684,11 @@ private:
       break;
     }
     case ast::ExprKind::Call: {
-      // Special-case builtin "print" -> printf
+      // Special-case the `print()` builtin and lower it to printf. The
+      // first argument's format specifiers go through translate_format
+      // (C^ `{d}` -> C `%d`) and then through escape_c so the resulting
+      // C string is a valid C string literal. Remaining arguments are
+      // emitted verbatim and must match the format specifier count.
       if (e->callee && e->callee->kind == ast::ExprKind::Identifier &&
           e->callee->name == "print") {
         out << "printf(";
@@ -686,6 +739,11 @@ private:
     }
   }
 
+  // escape_c turns the in-memory string body (already de-escaped by
+  // the parser) into a valid C string literal: the C-escapes are
+  // re-applied so the output round-trips through the C compiler
+  // unchanged. Control bytes below 0x20 are hex-escaped with `\xNN`
+  // so we never emit an invalid UTF-8 sequence into the C source.
   static std::string escape_c(const std::string &s) {
     std::string out;
     out.reserve(s.size() + 2);
@@ -723,8 +781,13 @@ private:
     return out;
   }
 
-  // Translate C^ format specifiers ({}, {d}, {s}, {f}, {x}) into printf
-  // format specifiers. Unrecognised forms are left intact.
+  // translate_format: C^ -> printf format specifier translation. The
+  // brace-delimited placeholders (`{}`, `{d}`, `{x}`, ...) are mapped
+  // to their printf equivalents; unrecognised bodies are passed
+  // through with a `%` prefix so the user gets a sensible error from
+  // the C compiler rather than silent miscompilation. Brace-literal
+  // escapes (e.g. `\{`) are not supported today; the design leaves
+  // them for the v0.2 format-string work.
   static std::string translate_format(const std::string &s) {
     std::string out;
     out.reserve(s.size());
@@ -785,11 +848,13 @@ private:
 
 } // namespace
 
+// Public entry point. The caller (main.cpp) doesn't currently pipe
+// its own diagnostics engine through here — instead we keep a local
+// engine inside Emitter so the lowering can record structural errors
+// (missing body, unresolved type, ...) without taking a parameter.
+// When the type-aware lowering lands, we'll flip this signature to
+// take a borrowed engine so driver-level rendering stays unified.
 EmitResult emit(const ast::TranslationUnit &unit) {
-  // We don't have direct access to the diagnostics engine here; the
-  // caller (main.cpp) wires the same engine through the parser path and
-  // any errors during emission are simply not generated for the supported
-  // subset. We still pass a local engine for future use.
   DiagnosticsEngine local;
   Emitter e(local);
   return e.run(unit);
