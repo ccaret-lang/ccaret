@@ -1,4 +1,20 @@
-// this is the caretc a compiler for the C^
+// Diagnostic renderer.
+//
+// Implements the C^ error modal format defined in
+// syntax/errors_Design.md. The contract is small and explicit:
+//
+//   1. Each diagnostic is rendered independently. Two consecutive
+//      diagnostics are separated by a single blank line in render_all.
+//   2. The header is `C^:error .. <message> <dot-leader> <file:line:col>`.
+//      Width is bounded by `target` (80 cols) and we collapse the
+//      leader to a fixed "··" pair when the head overflows.
+//   3. The source excerpt shows line number, a `|`, the line text, then
+//      a gutter line with `^^^^` carets. A trailing `try:` / `tip:`
+//      hint sits on the caret line, never on a new line.
+//
+// The implementation leans on a small set of TTY-aware helpers below;
+// all the colour logic is local to this file so a future --no-color
+// flag only needs to wire stdout_is_tty() through.
 #include "diagnostics.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -14,70 +30,70 @@
 namespace caret {
 
 namespace {
-constexpr const char *kReset = "\x1b[0m";
-constexpr const char *kBold = "\x1b[1m";
-constexpr const char *kDim = "\x1b[2m";
-constexpr const char *kRed = "\x1b[31m";
+// ANSI escape fragments. Kept as raw `const char*` so we never go
+// through std::string constructors on the render hot path. Sequences
+// follow the ECMA-48 SGR table.
+constexpr const char *kReset  = "\x1b[0m";
+constexpr const char *kBold   = "\x1b[1m";
+constexpr const char *kDim    = "\x1b[2m";
+constexpr const char *kRed    = "\x1b[31m";
 constexpr const char *kYellow = "\x1b[33m";
-constexpr const char *kGreen = "\x1b[32m";
-constexpr const char *kBlue = "\x1b[34m";
-constexpr const char *kCyan = "\x1b[36m";
+constexpr const char *kGreen  = "\x1b[32m";
+constexpr const char *kBlue   = "\x1b[34m";
+constexpr const char *kCyan   = "\x1b[36m";
 constexpr const char *kBright = "\x1b[97m";
 // Middle dot (U+00B7) — the C^ range operator used as a visual filler.
+// We split the two UTF-8 bytes so the literal stays a printable char.
 constexpr const char kDot = '\xC2';
 constexpr const char kDotTail = '\xB7';
 
+// Decide whether to emit colour codes. We probe the stderr stream
+// because that's where diagnostics go. Piped output is left
+// uncoloured so `caretc foo.cca > out.log` produces a clean file.
 bool stdout_is_tty() { return ::isatty(STDERR_FILENO) != 0; }
 
+// Map a Severity to the lower-case label used in `C^:<label>`.
 const char *sev_label(Severity s) {
   switch (s) {
-  case Severity::Note:
-    return "note";
-  case Severity::Warning:
-    return "warning";
-  case Severity::Error:
-    return "error";
-  case Severity::Fatal:
-    return "fatal";
+  case Severity::Note:    return "note";
+  case Severity::Warning: return "warning";
+  case Severity::Error:   return "error";
+  case Severity::Fatal:   return "fatal";
   }
   return "error";
 }
 
-// Returns the ANSI prefix for the severity tag (e.g. "C^:error"). For
-// Error / Warning / Fatal we want BOLD + the matching foreground colour.
+// ANSI prefix for the severity tag (e.g. "C^:error"). Error / Warning /
+// Fatal are bold; Note is bright white. Returns the empty string when
+// colour is disabled so the prefix concatenation is a no-op.
 std::string sev_head_style(Severity s, bool color) {
   if (!color)
     return "";
   switch (s) {
-  case Severity::Note:
-    return std::string(kBright);
-  case Severity::Warning:
-    return std::string(kBold) + kYellow;
-  case Severity::Error:
-    return std::string(kBold) + kRed;
-  case Severity::Fatal:
-    return std::string(kBold) + kRed;
+  case Severity::Note:    return std::string(kBright);
+  case Severity::Warning: return std::string(kBold) + kYellow;
+  case Severity::Error:   return std::string(kBold) + kRed;
+  case Severity::Fatal:   return std::string(kBold) + kRed;
   }
   return "";
 }
 
-// Returns the ANSI prefix used to colour the `^` carets under the source.
+// ANSI prefix for the `^` carets drawn under the source. Same palette
+// as the head line, but without the bold attribute so the underline
+// reads as a softer highlight.
 const char *sev_caret_style(Severity s, bool color) {
   if (!color)
     return "";
   switch (s) {
-  case Severity::Note:
-    return kBright;
-  case Severity::Warning:
-    return kYellow;
-  case Severity::Error:
-    return kRed;
-  case Severity::Fatal:
-    return kRed;
+  case Severity::Note:    return kBright;
+  case Severity::Warning: return kYellow;
+  case Severity::Error:   return kRed;
+  case Severity::Fatal:   return kRed;
   }
   return kReset;
 }
 
+// Repeat `s` `n` times. Used for the dot leader in the header.
 std::string repeat(const std::string &s, std::size_t n) {
   std::string r;
   r.reserve(s.size() * n);
@@ -86,6 +102,9 @@ std::string repeat(const std::string &s, std::size_t n) {
   return r;
 }
 
+// Extract the 1-based `line`-th line of `src`, without the trailing
+// newline. The result is a fresh string the renderer can mutate (we
+// don't today, but `get_line` stays a copy for safety).
 std::string get_line(const std::string &src, std::uint32_t line) {
   if (line == 0)
     return {};
@@ -104,6 +123,9 @@ std::string get_line(const std::string &src, std::uint32_t line) {
   return {};
 }
 
+// Left-pad `n` to `w` columns with spaces. The gutter is fixed at 3
+// characters today, so this only matters for line numbers > 999
+// (where the gutter just shifts naturally — no crash).
 std::string pad_left_uint(std::uint32_t n, std::size_t w) {
   std::ostringstream s;
   s << n;
@@ -113,9 +135,12 @@ std::string pad_left_uint(std::uint32_t n, std::size_t w) {
   return str;
 }
 
-// Compute the visual width used to lay out a line. The diagnostic header
-// is plain ASCII plus a couple of UTF-8 middle dots. We treat the 2-byte
-// "·" sequence as width 1 (matching the design's table layout).
+// Visual width of a string for layout purposes. ASCII bytes count 1;
+// UTF-8 lead bytes (2/3/4-byte sequences) count 1 and skip the right
+// number of continuation bytes. The diagnostic header contains only
+// the 2-byte "·" sequence, which this treats as width 1 to match the
+// design's table layout. Anything past that we treat as width 1 too;
+// wide-glyph source code is a future problem.
 std::size_t visual_size(const std::string &s) {
   std::size_t n = 0;
   for (std::size_t i = 0; i < s.size(); ++i) {
